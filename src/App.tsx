@@ -1,0 +1,229 @@
+import { useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Cat } from "./characters/cat";
+import { QuotaGauge } from "./components/QuotaGauge";
+import { PetMenu, ANIM_MS, type AnimSpeed, type CatSize } from "./components/PetMenu";
+import { useUsage } from "./pet/useUsage";
+import { countdown, isRateLimited, moodFor } from "./pet/stateMachine";
+import "./App.css";
+
+// On-screen cat sizes ("zoom"). w = window width, catH = cat stage height in px.
+const SIZES: Record<CatSize, { w: number; catH: number }> = {
+  s: { w: 140, catH: 96 },
+  m: { w: 156, catH: 118 },
+  l: { w: 192, catH: 152 },
+};
+
+function loadAnim(): AnimSpeed {
+  const v = localStorage.getItem("ccpet.anim");
+  return v && v in ANIM_MS ? (v as AnimSpeed) : "lively";
+}
+function loadSize(): CatSize {
+  const v = localStorage.getItem("ccpet.size");
+  return v === "s" || v === "m" || v === "l" ? v : "m";
+}
+
+function App() {
+  const { usage, status } = useUsage();
+  const [install, setInstall] = useState<{ phase: "idle" | "working" | "done" | "error"; msg: string }>(
+    { phase: "idle", msg: "" },
+  );
+  const [anim, setAnim] = useState<AnimSpeed>(loadAnim);
+  const [size, setSize] = useState<CatSize>(loadSize);
+  const [showWeekly, setShowWeekly] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [hookReady, setHookReady] = useState(false);
+  const [, tick] = useState(0);
+
+  const nodata = status === "nodata" || !usage;
+  const dimmed = status === "stale";
+  const rateLimited = usage ? isRateLimited(usage) : false;
+
+  // Fast ticking only while asleep (for the mm:ss whisper); slow otherwise.
+  useEffect(() => {
+    const period = rateLimited ? 1000 : 30_000;
+    const id = setInterval(() => tick((n) => n + 1), period);
+    return () => clearInterval(id);
+  }, [rateLimited]);
+
+  // Size the transparent window to hug the current layout so empty area never eats
+  // desktop clicks: setup card, open menu, or cat (+ optional weekly chip).
+  const dims: [number, number] = nodata
+    ? [216, 268]
+    : menuOpen
+    ? [220, 384]
+    : [Math.max(SIZES[size].w, 140), SIZES[size].catH + 44 + (showWeekly ? 30 : 0) + 8];
+  const lastDims = useRef<string>("");
+  useEffect(() => {
+    const key = dims.join("x");
+    if (lastDims.current === key) return;
+    lastDims.current = key;
+    invoke("set_window", { w: dims[0], h: dims[1] }).catch(() => {});
+  }, [dims]);
+
+  // The transparent window is tiny, so the in-window backdrop can't catch clicks that
+  // land on other apps. While the menu is open we grab focus and also dismiss it on
+  // Escape/Enter or when the window loses focus (i.e. you click anywhere else).
+  useEffect(() => {
+    if (!menuOpen) return;
+    const w = getCurrentWindow();
+    w.setFocus().catch(() => {});
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "Enter") setMenuOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    // Consider focus "settled" shortly after opening so a later blur (click-away) closes
+    // the menu even if the window was already focused from the right-click itself.
+    let gained = false;
+    const settle = window.setTimeout(() => (gained = true), 200);
+    let un: (() => void) | undefined;
+    w.onFocusChanged(({ payload: focused }) => {
+      if (focused) gained = true;
+      else if (gained) setMenuOpen(false);
+    }).then((f) => (un = f));
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.clearTimeout(settle);
+      un?.();
+    };
+  }, [menuOpen]);
+
+  // Know whether the hook is already registered, so a connected-but-idle widget says
+  // "waiting for usage" rather than prompting to connect again.
+  useEffect(() => {
+    invoke<boolean>("hook_installed").then(setHookReady).catch(() => {});
+  }, []);
+
+  async function handleInstall() {
+    setInstall({ phase: "working", msg: "" });
+    try {
+      await invoke<string>("install_statusline");
+      setInstall({ phase: "done", msg: "" });
+    } catch (e) {
+      setInstall({ phase: "error", msg: String(e) });
+    }
+  }
+
+  function chooseAnim(a: AnimSpeed) {
+    setAnim(a);
+    localStorage.setItem("ccpet.anim", a);
+  }
+  function chooseSize(s: CatSize) {
+    setSize(s);
+    localStorage.setItem("ccpet.size", s);
+  }
+  function menuAction(a: "reset_pos" | "hide" | "quit") {
+    setMenuOpen(false);
+    invoke("window_action", { action: a }).catch(() => {});
+  }
+
+  const mood = usage ? moodFor(usage) : "chill";
+
+  // Drag to move; a clean left-click toggles the weekly chip; right-click opens the menu.
+  const press = useRef<{ x: number; y: number } | null>(null);
+  function onPointerDown(e: React.PointerEvent) {
+    if (e.button !== 0) return;
+    press.current = { x: e.clientX, y: e.clientY };
+  }
+  function onPointerMove(e: React.PointerEvent) {
+    const p = press.current;
+    if (!p) return;
+    if (Math.abs(e.clientX - p.x) > 3 || Math.abs(e.clientY - p.y) > 3) {
+      press.current = null;
+      getCurrentWindow().startDragging().catch(() => {});
+    }
+  }
+  function onPointerUp() {
+    const p = press.current;
+    press.current = null;
+    if (p && !nodata && !menuOpen) setShowWeekly((v) => !v);
+  }
+  function onContextMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    setShowWeekly(false);
+    setMenuOpen(true);
+  }
+
+  const weeklyUsed = usage ? Math.round(usage.weeklyPercent) : 0;
+
+  return (
+    <div className="widget">
+      <div
+        className="stage"
+        style={{ height: SIZES[size].catH, cursor: "grab" }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onContextMenu={onContextMenu}
+        title="Drag to move · click for weekly · right-click for options"
+      >
+        <Cat mood={nodata ? "chill" : mood} dimmed={dimmed} restMs={ANIM_MS[anim]} />
+      </div>
+
+      {!nodata && usage && <QuotaGauge usage={usage} />}
+
+      {!nodata && usage && showWeekly && !menuOpen && (
+        <div className="weekly-chip">
+          Weekly {weeklyUsed}% · resets in {countdown(usage.weeklyResetsAt)}
+        </div>
+      )}
+
+      {nodata && (
+        <div className="setup">
+          {install.phase === "done" ? (
+            <>
+              <div className="setup-title">✓ Connected!</div>
+              <div className="setup-steps">
+                Now open a terminal and run <code>claude</code> once.
+                <br />
+                The cat wakes up on its own.
+              </div>
+            </>
+          ) : install.phase === "error" ? (
+            <>
+              <div className="setup-title">Couldn&apos;t auto-connect</div>
+              <div className="setup-steps">{install.msg}</div>
+              <button className="setup-btn" onClick={handleInstall} type="button">
+                Try again
+              </button>
+            </>
+          ) : hookReady ? (
+            <>
+              <div className="setup-title">Waiting for usage…</div>
+              <div className="setup-hint">
+                Send a message in Claude&nbsp;Code and the cat wakes up.
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="setup-title">Waiting for Claude&nbsp;Code…</div>
+              <button
+                className="setup-btn"
+                onClick={handleInstall}
+                disabled={install.phase === "working"}
+                type="button"
+              >
+                {install.phase === "working" ? "Setting up…" : "Connect ClaudeCat"}
+              </button>
+              <div className="setup-hint">One click to link your usage.</div>
+            </>
+          )}
+        </div>
+      )}
+
+      {menuOpen && (
+        <PetMenu
+          anim={anim}
+          size={size}
+          onAnim={chooseAnim}
+          onSize={chooseSize}
+          onAction={menuAction}
+          onClose={() => setMenuOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+export default App;
