@@ -41,9 +41,14 @@ function clamp(n: number): number {
 // Mood tiers along a single "tiredness" axis. The cat stays relaxed (an animated
 // grooming idle) until a budget is genuinely nearly spent — only above 90% does it
 // look tired, then lies down, then curls up asleep once a limit is actually hit.
+// Rate-limited is treated as >= 99.5, not a strict 100: the usage endpoint can report
+// e.g. 99.7 at the moment you're actually capped, and rounding that down to "weary" would
+// hide the asleep/reset state. Half a percent of slack costs nothing and avoids that gap.
+export const RATE_LIMIT_PCT = 99.5;
+
 export function moodFor(u: Usage): Mood {
   const load = loadOf(u);
-  if (load >= 100) return "sleeping"; // rate-limited: out cold, "Reset in mm:ss"
+  if (load >= RATE_LIMIT_PCT) return "sleeping"; // rate-limited: out cold, "Reset in mm:ss"
   if (load >= 97) return "weary"; // right at the edge: lying down, exhausted
   if (load >= 90) return "tired"; // nearly out: sitting, droopy
   return "chill"; // plenty of headroom: relaxed
@@ -51,7 +56,7 @@ export function moodFor(u: Usage): Mood {
 
 /** Whether the cat is out cold (rate-limited) — the breathing "Reset in" whisper. */
 export function isRateLimited(u: Usage): boolean {
-  return loadOf(u) >= 100;
+  return loadOf(u) >= RATE_LIMIT_PCT;
 }
 
 /** Data older than this reads as "offline" — cat dims, numbers fade. */

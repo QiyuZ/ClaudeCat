@@ -49,7 +49,7 @@ The cat's pose tracks whichever budget is tighter — `load = max(5h%, weekly%)`
 </tr>
 <tr>
 <td align="center"><img src="docs/sleeping.gif" width="130" alt="sleeping"></td>
-<td>Rate-limited — <b>load = 100%</b></td>
+<td>Rate-limited — <b>load ≥ 99.5%</b></td>
 <td><b>Asleep.</b> Curled up, with a soft <code>Reset in 02:40</code> breathing beside it.</td>
 </tr>
 <tr>
@@ -60,8 +60,12 @@ The cat's pose tracks whichever budget is tighter — `load = max(5h%, weekly%)`
 </tbody>
 </table>
 
-The **typing** pose is an overlay: whenever ClaudeCat detects an in-progress task it plays
-the working animation (unless the cat is fully rate-limited — an asleep cat stays asleep).
+The **typing** pose is an overlay: while a task is in progress ClaudeCat plays the working
+animation (unless the cat is fully rate-limited — an asleep cat stays asleep). Detection is
+**exact** — Claude Code `UserPromptSubmit` / `Stop` hooks (installed alongside the statusline
+hook) flip a flag on when a turn starts and off when it ends, so the cat keeps typing through
+long generations and multi-minute tool runs. Without those hooks it falls back to a coarser
+transcript-activity heuristic.
 
 ## Interacting with the cat
 
@@ -70,7 +74,7 @@ the working animation (unless the cat is fully rate-limited — an asleep cat st
 | **Hover** | Reveals the weekly hearts; they slip away when your pointer leaves. |
 | **Drag** | Moves the cat anywhere — it stays put where you drop it. |
 | **Right-click** | Opens the pet menu: animation speed, cat size (zoom), reset position, hide, quit. |
-| **Tray icon** | Show/hide, install statusline hook, reset position, toggle click-through, quit. |
+| **Tray icon** | Show/hide, install statusline hook, reset position, toggle click-through, start on login, quit. |
 
 "Click-through" lets mouse clicks pass through the widget to the desktop behind it. All
 settings (size, animation speed) persist across restarts, and the app can start on login.
@@ -79,15 +83,40 @@ settings (size, animation speed) persist across restarts, and the app can start 
 
 > ClaudeCat currently ships for **Windows**.
 
-1. Download and run the installer (`ClaudeCat_x.y.z_x64-setup.exe` or the `.msi`) from
-   [Releases](https://github.com/QiyuZ/ClaudeCat/releases).
-2. The cat appears in the top-right corner. As long as you're signed into Claude Code, it
-   wakes up on its own within a minute.
-3. *(Recommended)* Click **Connect ClaudeCat** — or tray → *Install statusline hook* — to
-   install the statusline data source (see below). If you already keep a custom `statusLine`,
-   ClaudeCat **refuses to overwrite it** and you can wire it up manually instead.
+**Option A — installer.** Download `ClaudeCat_x.y.z_x64-setup.exe` (or the `.msi`) from
+[Releases](https://github.com/QiyuZ/ClaudeCat/releases) and run it.
 
-That's it. Right-click for per-pet options; use the tray icon for the rest.
+**Option B — PowerShell.** Fetch and launch the latest installer in one go:
+
+```powershell
+$a = (irm https://api.github.com/repos/QiyuZ/ClaudeCat/releases/latest).assets |
+  Where-Object name -like '*x64-setup.exe' | Select-Object -First 1
+$o = Join-Path $env:TEMP $a.name
+Invoke-RestMethod $a.browser_download_url -OutFile $o; Start-Process $o
+```
+
+Then:
+
+1. The cat appears in the top-right corner and wakes up on its own within a minute (as long
+   as you're signed into Claude Code).
+2. *(Recommended)* Click **Connect ClaudeCat** — or tray → *Install statusline hook* — to add
+   the statusline data source (see [Where the numbers come from](#where-the-numbers-come-from)).
+   ClaudeCat won't overwrite a custom `statusLine` you already keep.
+
+### Launching it later
+
+- **Start on login (recommended):** right-click the tray icon → **Start on login**. The cat
+  then shows up automatically every time you sign in — no need to launch it by hand.
+- **From a terminal:** add a `claudecat` command to your PowerShell profile (`notepad $PROFILE`):
+
+  ```powershell
+  function claudecat { Start-Process "$env:LOCALAPPDATA\claudecat\claudecat.exe" }
+  ```
+
+  Point the path at wherever the installer placed `claudecat.exe` (tray or Start-menu shortcut
+  → *Open file location*). Then just run `claudecat` from any terminal.
+
+Right-click the cat for per-pet options; use the tray icon for the rest.
 
 ## Where the numbers come from
 
@@ -109,6 +138,11 @@ for exactly what this reads and sends.
 Either way, the numbers are exactly what Claude Code itself reports, for whatever account
 it's signed into.
 
+> **You don't need to run `claude` to see your usage.** As long as you've signed into Claude
+> Code at least once (so its credentials exist), the OAuth fallback fetches your usage on its
+> own the moment the widget launches. Running a Claude Code session only refreshes the
+> statusline path and drives the cat's typing pose.
+
 ## Privacy & security
 
 ClaudeCat is a local desktop widget. Here is **everything** it touches — all of it auditable
@@ -123,6 +157,10 @@ in this repo:
     anywhere except the request below.
   - modification **timestamps** (not contents) of transcript files under `~/.claude/projects`
     — this is how it knows a task is in progress and plays the typing animation.
+- **What it writes (opt-in, when you click Connect):** a statusline hook and two activity
+  hooks (`UserPromptSubmit` / `Stop`) in `~/.claude/settings.json`, plus their small scripts
+  in `~/.claude/cc-pet/`. It backs up your `settings.json` first, refuses to replace a custom
+  `statusLine`, and merges the activity hooks alongside any hooks you already have.
 - **The one network call it makes:** a `GET` to `https://api.anthropic.com/api/oauth/usage`
   (Anthropic's official server) with your token, to read your own usage — the same call Claude
   Code makes internally. The response is normalized to percentages + reset times and cached to

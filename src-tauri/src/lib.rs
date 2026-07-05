@@ -7,10 +7,14 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, LogicalSize, Manager, PhysicalPosition, WebviewWindow,
 };
+use tauri_plugin_autostart::ManagerExt;
 
 /// The statusline hook, embedded so `install_statusline` can drop it on disk with no
 /// external files. Kept byte-identical to scripts/statusline.js at build time.
 const STATUSLINE_JS: &str = include_str!("../../scripts/statusline.js");
+/// The activity hook (UserPromptSubmit/Stop), embedded the same way. Writes cc-pet-busy.json
+/// so the cat's typing pose tracks a task exactly, from start to finish.
+const ACTIVITY_JS: &str = include_str!("../../scripts/cc-pet-activity.js");
 
 const STALE_AFTER_SECS: u64 = 10 * 60;
 // OAuth /usage fallback: the same undocumented endpoint Claude Code's own `/usage`
@@ -22,9 +26,15 @@ const CLAUDE_CODE_UA: &str = "claude-code/2.1.201";
 const STATUSLINE_CACHE: &str = "cc-pet-usage.json";
 const OAUTH_CACHE: &str = "cc-pet-usage-oauth.json";
 // A task counts as "in progress" (the cat types) if any Claude Code transcript was
-// written this recently — long enough to bridge the pauses between tool calls / thinking,
-// short enough that the cat settles soon after the work stops.
-const ACTIVE_WINDOW_SECS: u64 = 15;
+// written this recently. It has to bridge the quiet gaps *within* a task — a long model
+// generation or a slow tool writes nothing to the transcript meanwhile — so this is
+// generous; the trade-off is the cat keeps typing for up to this long after work stops.
+// (For pinpoint accuracy across multi-minute tool runs, a Stop/UserPromptSubmit hook that
+// writes an explicit busy flag would be exact — see the README notes.)
+const ACTIVE_WINDOW_SECS: u64 = 45;
+// Safety cap so a missed Stop hook can't leave the cat typing forever: a `busy=true` flag
+// older than this is treated as stale. Generous enough for very long single turns.
+const MAX_BUSY_SECS: u64 = 60 * 60;
 // Default window size at first paint; the frontend drives real sizing via set_window so
 // the transparent window always hugs the current layout (cat size, weekly chip, setup).
 const SIZE_DEFAULT: (f64, f64) = (156.0, 172.0);
@@ -141,8 +151,27 @@ fn latest_transcript_mtime() -> Option<u64> {
     (newest > 0).then_some(newest)
 }
 
+/// The explicit busy flag written by the activity hooks: (active, ts_secs). None if the
+/// hooks aren't installed (file absent) or the file is unreadable.
+fn read_busy_flag() -> Option<(bool, u64)> {
+    let file = claude_dir()?.join("cc-pet-busy.json");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&file).ok()?).ok()?;
+    let active = v.get("active")?.as_bool()?;
+    let ts = v.get("ts").and_then(|t| t.as_u64()).unwrap_or(0) / 1000; // ms -> secs
+    Some((active, ts))
+}
+
 /// Whether a Claude Code task is currently in progress (drives the cat's typing pose).
+///
+/// Prefers the exact signal: the UserPromptSubmit/Stop activity hooks flip cc-pet-busy.json
+/// on at the start of a turn and off when it finishes, so the cat types for the whole task —
+/// even through long generations and multi-minute tool runs. If the widget's `busy=true`
+/// somehow outlives a missed Stop, MAX_BUSY_SECS caps it. When the hooks aren't installed we
+/// fall back to the coarser transcript-mtime heuristic.
 fn is_active() -> bool {
+    if let Some((active, ts)) = read_busy_flag() {
+        return active && now_secs().saturating_sub(ts) <= MAX_BUSY_SECS;
+    }
     latest_transcript_mtime()
         .map(|m| now_secs().saturating_sub(m) <= ACTIVE_WINDOW_SECS)
         .unwrap_or(false)
@@ -353,8 +382,39 @@ fn set_click_through(window: WebviewWindow, ignore: bool) {
     }
 }
 
-/// Install the statusline hook: drop the script into ~/.claude/cc-pet/ and register it
-/// in settings.json. Refuses to clobber a pre-existing (foreign) statusLine.
+/// Idempotently register one command hook under a Claude Code event, merging into any
+/// hooks the user already has (identified by the "cc-pet-activity" marker so re-installs
+/// never duplicate and never touch foreign hooks).
+fn ensure_activity_hook(settings: &mut Value, event: &str, command: &str) {
+    if !settings.get("hooks").map(Value::is_object).unwrap_or(false) {
+        settings["hooks"] = json!({});
+    }
+    if !settings["hooks"].get(event).map(Value::is_array).unwrap_or(false) {
+        settings["hooks"][event] = json!([]);
+    }
+    let groups = settings["hooks"][event].as_array_mut().unwrap();
+    let already = groups.iter().any(|g| {
+        g.get("hooks")
+            .and_then(Value::as_array)
+            .map(|hs| {
+                hs.iter().any(|h| {
+                    h.get("command")
+                        .and_then(Value::as_str)
+                        .map(|c| c.contains("cc-pet-activity"))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    });
+    if !already {
+        groups.push(json!({ "hooks": [ { "type": "command", "command": command } ] }));
+    }
+}
+
+/// Install the ClaudeCat hooks: drop the scripts into ~/.claude/cc-pet/ and register them in
+/// settings.json — the statusline data source plus the UserPromptSubmit/Stop activity hooks
+/// that drive the exact typing pose. Refuses to clobber a pre-existing (foreign) statusLine;
+/// merges the activity hooks alongside any hooks the user already has.
 #[tauri::command]
 fn install_statusline() -> Result<String, String> {
     let dir = claude_dir().ok_or("cannot locate ~/.claude")?;
@@ -362,6 +422,8 @@ fn install_statusline() -> Result<String, String> {
     std::fs::create_dir_all(&pet_dir).map_err(|e| e.to_string())?;
     let script = pet_dir.join("statusline.js");
     std::fs::write(&script, STATUSLINE_JS).map_err(|e| e.to_string())?;
+    let activity = pet_dir.join("cc-pet-activity.js");
+    std::fs::write(&activity, ACTIVITY_JS).map_err(|e| e.to_string())?;
 
     let settings_path = dir.join("settings.json");
     let mut settings: Value = std::fs::read_to_string(&settings_path)
@@ -379,10 +441,14 @@ fn install_statusline() -> Result<String, String> {
     }
     settings["statusLine"] = json!({ "type": "command", "command": our_cmd });
 
+    let activity_path = activity.to_string_lossy();
+    ensure_activity_hook(&mut settings, "UserPromptSubmit", &format!("node \"{activity_path}\" busy"));
+    ensure_activity_hook(&mut settings, "Stop", &format!("node \"{activity_path}\" idle"));
+
     let _ = std::fs::copy(&settings_path, dir.join("settings.json.ccpet-backup"));
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings).unwrap())
         .map_err(|e| e.to_string())?;
-    Ok("Statusline hook installed. Run a Claude Code session to see live data.".into())
+    Ok("ClaudeCat hooks installed. Live usage + the typing pose are ready.".into())
 }
 
 fn position_top_right(window: &WebviewWindow) {
@@ -461,6 +527,10 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let install = MenuItem::with_id(app, "install", "Install statusline hook", true, None::<&str>)?;
     let reset = MenuItem::with_id(app, "reset_pos", "Reset position", true, None::<&str>)?;
     let passthrough = MenuItem::with_id(app, "passthrough", "Toggle click-through", true, None::<&str>)?;
+    // Reflect the current autostart state in the label so the toggle reads clearly.
+    let autostart_on = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart_label = if autostart_on { "Start on login  ✓" } else { "Start on login" };
+    let autostart = MenuItem::with_id(app, "autostart", autostart_label, true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(
         app,
@@ -470,17 +540,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             &install,
             &reset,
             &passthrough,
+            &autostart,
             &PredefinedMenuItem::separator(app)?,
             &quit,
         ],
     )?;
 
+    let autostart_item = autostart.clone();
     TrayIconBuilder::with_id("main-tray")
         .icon(app.default_window_icon().unwrap().clone())
         .tooltip("ClaudeCat — Claude Code usage")
         .menu(&menu)
         .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| {
+        .on_menu_event(move |app, event| {
             let window = app.get_webview_window("main");
             match event.id.as_ref() {
                 "show" => {
@@ -510,6 +582,19 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     if let Some(w) = window {
                         let _ = w.set_ignore_cursor_events(now);
                     }
+                }
+                "autostart" => {
+                    // Toggle launch-on-login via the OS (registry Run key on Windows).
+                    let mgr = app.autolaunch();
+                    let (msg, label) = if mgr.is_enabled().unwrap_or(false) {
+                        let _ = mgr.disable();
+                        ("Start on login: off", "Start on login")
+                    } else {
+                        let _ = mgr.enable();
+                        ("Start on login: on", "Start on login  ✓")
+                    };
+                    let _ = autostart_item.set_text(label);
+                    let _ = app.emit("toast", msg);
                 }
                 "quit" => app.exit(0),
                 _ => {}
