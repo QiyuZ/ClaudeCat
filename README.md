@@ -14,6 +14,8 @@ cat starts typing along with it.
 
 <img src="docs/relaxed.gif" width="180" alt="relaxed cat grooming"> <img src="docs/typing.gif" width="180" alt="cat typing while a task runs"> <img src="docs/sleeping.gif" width="180" alt="cat asleep, rate-limited">
 
+<sub>Meet <b>November</b> 🐈 — my own cat, and the model for every frame here.</sub>
+
 </div>
 
 ---
@@ -91,9 +93,11 @@ Downloads the portable app to `%LOCALAPPDATA%\ClaudeCat` and launches it. No adm
 internet", so Windows doesn't gate them:
 
 ```powershell
-$dir = "$env:LOCALAPPDATA\ClaudeCat"; New-Item -Force -ItemType Directory $dir | Out-Null
-irm https://github.com/QiyuZ/ClaudeCat/releases/latest/download/claudecat.exe -OutFile "$dir\claudecat.exe"
-Start-Process "$dir\claudecat.exe"
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12   # Windows PowerShell 5.1
+$exe = "$env:LOCALAPPDATA\ClaudeCat\claudecat.exe"
+New-Item -Force -ItemType Directory (Split-Path $exe) | Out-Null
+Invoke-WebRequest https://github.com/QiyuZ/ClaudeCat/releases/latest/download/claudecat.exe -OutFile $exe
+Start-Process $exe
 ```
 
 ### Or — the installer
@@ -105,6 +109,12 @@ Download `claudecat_x.y.z_x64-setup.exe` (or the `.msi`) from
 > expected for an open-source project without a (paid) code-signing certificate. It is not a
 > sign the app is unsafe; the entire source is in this repo and you can build it yourself.
 > Click **More info → Run anyway**. The PowerShell method above sidesteps this notice entirely.
+
+### Or — build it yourself
+
+Don't trust a prebuilt binary? Clone and build from source — see
+[Build from source](#build-from-source). The standalone `claudecat.exe` lands in
+`src-tauri/target/release/`.
 
 After it starts:
 
@@ -188,10 +198,15 @@ Requires **Node** and the **Rust MSVC toolchain** (Rust + Visual Studio C++ Buil
 Tauri v2.
 
 ```powershell
+git clone https://github.com/QiyuZ/ClaudeCat.git
+cd ClaudeCat
 npm install
 npm run tauri dev     # dev run with hot reload (first compile takes a few minutes)
-npm run tauri build   # -> .msi / .exe in src-tauri/target/release/bundle
+npm run tauri build   # -> installer (bundle/) + standalone claudecat.exe in src-tauri/target/release/
 ```
+
+The standalone `src-tauri/target/release/claudecat.exe` is the same portable binary the
+one-line installer downloads — you can run it directly once it's built.
 
 ### Manual statusline setup
 
@@ -266,8 +281,11 @@ build targets) and code signing so the installer stops tripping SmartScreen.
 
 ## Credits & license
 
-Built with [Tauri v2](https://tauri.app) + React + TypeScript. Cat art hand-drawn for this
-project. Data-layer inspiration from [`ohugonnot/claude-code-statusline`](https://github.com/ohugonnot/claude-code-statusline)
-and [`ccusage`](https://github.com/ryoppippi/ccusage).
+The character is **November** 🐈 — my own cat — hand-drawn frame by frame for this project.
+Hope you like him.
+
+Built with [Tauri v2](https://tauri.app) + React + TypeScript. Data-layer inspiration from
+[`ohugonnot/claude-code-statusline`](https://github.com/ohugonnot/claude-code-statusline) and
+[`ccusage`](https://github.com/ryoppippi/ccusage).
 
 Released under the [MIT License](LICENSE) © 2026 QiyuZ.
