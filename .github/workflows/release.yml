@@ -42,6 +42,22 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "ClaudeCat ${{ github.ref_name }}"
-          releaseBody: "A hand-drawn desktop cat for your Claude Code usage. Download the `-setup.exe` (or `.msi`) below to install."
-          releaseDraft: true
+          releaseBody: |
+            A hand-drawn desktop cat for your Claude Code usage.
+
+            **Easiest install (no SmartScreen prompt):** see the PowerShell one-liner in the README.
+            Or download `-setup.exe` / `.msi` below (click *More info → Run anyway* on the SmartScreen
+            notice — the app is open-source and unsigned).
+          # Published directly (not a draft) so `releases/latest/download/...` links resolve.
+          releaseDraft: false
           prerelease: false
+
+      # Attach the standalone binary under a stable, version-less name so the README's
+      # `releases/latest/download/claudecat.exe` install command always resolves.
+      - name: Attach portable exe
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload ${{ github.ref_name }} `
+            "src-tauri/target/release/claudecat.exe" --clobber

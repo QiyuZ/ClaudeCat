@@ -81,40 +81,49 @@ settings (size, animation speed) persist across restarts, and the app can start 
 
 ## Install
 
-> ClaudeCat currently ships for **Windows**.
+> ClaudeCat ships for **Windows**. It needs the WebView2 runtime, which is preinstalled on
+> Windows 11 and current Windows 10.
 
-**Option A — installer.** Download `ClaudeCat_x.y.z_x64-setup.exe` (or the `.msi`) from
-[Releases](https://github.com/QiyuZ/ClaudeCat/releases) and run it.
+### Easiest — one line in PowerShell (recommended)
 
-**Option B — PowerShell.** Fetch and launch the latest installer in one go:
+Downloads the portable app to `%LOCALAPPDATA%\ClaudeCat` and launches it. No admin rights, and
+**no SmartScreen prompt** — files fetched by PowerShell aren't tagged "downloaded from the
+internet", so Windows doesn't gate them:
 
 ```powershell
-$a = (irm https://api.github.com/repos/QiyuZ/ClaudeCat/releases/latest).assets |
-  Where-Object name -like '*x64-setup.exe' | Select-Object -First 1
-$o = Join-Path $env:TEMP $a.name
-Invoke-RestMethod $a.browser_download_url -OutFile $o; Start-Process $o
+$dir = "$env:LOCALAPPDATA\ClaudeCat"; New-Item -Force -ItemType Directory $dir | Out-Null
+irm https://github.com/QiyuZ/ClaudeCat/releases/latest/download/claudecat.exe -OutFile "$dir\claudecat.exe"
+Start-Process "$dir\claudecat.exe"
 ```
 
-Then:
+### Or — the installer
 
-1. The cat appears in the top-right corner and wakes up on its own within a minute (as long
-   as you're signed into Claude Code).
-2. *(Recommended)* Click **Connect ClaudeCat** — or tray → *Install statusline hook* — to add
-   the statusline data source (see [Where the numbers come from](#where-the-numbers-come-from)).
-   ClaudeCat won't overwrite a custom `statusLine` you already keep.
+Download `claudecat_x.y.z_x64-setup.exe` (or the `.msi`) from
+[Releases](https://github.com/QiyuZ/ClaudeCat/releases) and run it.
+
+> **Seeing "Windows protected your PC"?** That's SmartScreen flagging an **unsigned** app —
+> expected for an open-source project without a (paid) code-signing certificate. It is not a
+> sign the app is unsafe; the entire source is in this repo and you can build it yourself.
+> Click **More info → Run anyway**. The PowerShell method above sidesteps this notice entirely.
+
+After it starts:
+
+1. The cat appears top-right and wakes up on its own within a minute — as long as you've signed
+   into Claude Code (see [Where the numbers come from](#where-the-numbers-come-from)).
+2. *(Optional)* Click **Connect ClaudeCat** — or tray → *Install statusline hook* — to add the
+   statusline source and the exact **typing** detection. ClaudeCat won't overwrite a custom
+   `statusLine` you already keep.
 
 ### Launching it later
 
 - **Start on login (recommended):** right-click the tray icon → **Start on login**. The cat
-  then shows up automatically every time you sign in — no need to launch it by hand.
-- **From a terminal:** add a `claudecat` command to your PowerShell profile (`notepad $PROFILE`):
+  then appears automatically every time you sign in — no need to launch it by hand.
+- **`claudecat` command:** if you installed via PowerShell above, add this to your profile
+  (`notepad $PROFILE`), then run `claudecat` from any terminal:
 
   ```powershell
-  function claudecat { Start-Process "$env:LOCALAPPDATA\claudecat\claudecat.exe" }
+  function claudecat { Start-Process "$env:LOCALAPPDATA\ClaudeCat\claudecat.exe" }
   ```
-
-  Point the path at wherever the installer placed `claudecat.exe` (tray or Start-menu shortcut
-  → *Open file location*). Then just run `claudecat` from any terminal.
 
 Right-click the cat for per-pet options; use the tray icon for the rest.
 
@@ -229,10 +238,31 @@ python scripts/make_state_gifs.py    # src/assets/cat/*.png -> docs/*.gif (READM
 
 ## Roadmap
 
-- ✅ Transparent sprite cat with real 5h / weekly data, robust reset countdowns.
-- ✅ OAuth usage fallback for Claude Code versions that don't emit `rate_limits`.
-- ✅ Hover-reveal weekly hearts; "actively working" typing pose from live task detection.
-- ⬜ Optional dog (or other) character; weekly heat-map; macOS / Linux builds.
+**Shipped**
+
+- Transparent sprite cat with real 5h / weekly data and robust reset countdowns.
+- OAuth `/usage` fallback for Claude Code versions that don't emit `rate_limits`.
+- Hover-reveal weekly hearts; exact **typing** pose from `UserPromptSubmit` / `Stop` hooks.
+- One-click hook install, start-on-login, CI-built releases.
+
+**More characters** *(next)* — the character layer is deliberately isolated to a single file
+(`cat.tsx`, a `Mood → frames` table), so adding a **dog** or other animal is mostly art plus a
+character picker in the tray menu. The cheapest delight, and it proves the swap-the-character
+design.
+
+**Bring-your-own-pet** *(the big one)* — a simple pet-pack format: a folder/zip of per-mood PNG
+frames plus a small `pet.json` mapping moods → frames and timings, dropped into a `pets/`
+directory or imported from the menu. Ship a couple of official packs and let the community make
+the rest — this turns ClaudeCat from a toy into a little platform. The existing
+`process_sprites.py` (background knock-out + framing) becomes the authoring tool.
+
+**Richer data & signals** — a small data-source badge (official / oauth) so you can see where a
+number comes from; a weekly usage sparkline or mini heat-map from cached snapshots; optional
+token & cost stats parsed from local JSONL (ccusage-style); a gentle notification when you
+cross 90% or when a window resets.
+
+**Reach** — macOS / Linux builds (Tauri already supports them; needs platform window code and
+build targets) and code signing so the installer stops tripping SmartScreen.
 
 ## Credits & license
 
