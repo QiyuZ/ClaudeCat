@@ -21,6 +21,10 @@ const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
 const CLAUDE_CODE_UA: &str = "claude-code/2.1.201";
 const STATUSLINE_CACHE: &str = "cc-pet-usage.json";
 const OAUTH_CACHE: &str = "cc-pet-usage-oauth.json";
+// A task counts as "in progress" (the cat types) if any Claude Code transcript was
+// written this recently — long enough to bridge the pauses between tool calls / thinking,
+// short enough that the cat settles soon after the work stops.
+const ACTIVE_WINDOW_SECS: u64 = 15;
 // Default window size at first paint; the frontend drives real sizing via set_window so
 // the transparent window always hugs the current layout (cat size, weekly chip, setup).
 const SIZE_DEFAULT: (f64, f64) = (156.0, 172.0);
@@ -66,7 +70,7 @@ fn load_source(name: &str) -> Option<(Value, u64, bool)> {
 /// (`cc-pet-usage-oauth.json`). We prefer whichever actually has data, then whichever is
 /// newer — so statusline wins when it works, and OAuth transparently fills in when it
 /// doesn't (the common case, since `rate_limits` isn't emitted on every machine).
-fn read_usage() -> Value {
+fn read_usage_core() -> Value {
     let mut cands: Vec<(Value, u64, bool)> = Vec::new();
     if let Some(s) = load_source(STATUSLINE_CACHE) {
         cands.push(s);
@@ -88,11 +92,60 @@ fn read_usage() -> Value {
     json!({ "status": if stale { "stale" } else { "ok" }, "data": data })
 }
 
+/// The usage envelope plus a live `active` flag (task in progress) for the UI.
+fn read_usage() -> Value {
+    let mut env = read_usage_core();
+    env["active"] = json!(is_active());
+    env
+}
+
 /// Whether the statusline path alone already has fresh, real data — if so the OAuth
 /// poller stays quiet to avoid needless calls to the aggressively-rate-limited endpoint.
 fn statusline_fresh_with_data() -> bool {
     matches!(load_source(STATUSLINE_CACHE), Some((_, updated, true))
         if now_secs().saturating_sub(updated) <= STALE_AFTER_SECS)
+}
+
+/// Newest mtime (epoch secs) across all Claude Code transcripts, i.e. the last time any
+/// session wrote activity to disk. None if no transcripts exist yet.
+fn latest_transcript_mtime() -> Option<u64> {
+    fn walk(dir: &std::path::Path, depth: u8, newest: &mut u64) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, depth - 1, newest);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                if let Some(secs) = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                {
+                    if secs > *newest {
+                        *newest = secs;
+                    }
+                }
+            }
+        }
+    }
+    let root = claude_dir()?.join("projects");
+    let mut newest = 0u64;
+    walk(&root, 3, &mut newest);
+    (newest > 0).then_some(newest)
+}
+
+/// Whether a Claude Code task is currently in progress (drives the cat's typing pose).
+fn is_active() -> bool {
+    latest_transcript_mtime()
+        .map(|m| now_secs().saturating_sub(m) <= ACTIVE_WINDOW_SECS)
+        .unwrap_or(false)
 }
 
 /// Minimal ISO-8601 -> epoch seconds (handles the "...Z" form our hook writes).

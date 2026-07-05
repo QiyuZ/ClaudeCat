@@ -2,6 +2,10 @@
   "name": "claudecat",
   "private": true,
   "version": "0.1.0",
+  "description": "A hand-drawn desktop cat that shows your Claude Code usage.",
+  "license": "MIT",
+  "author": "QiyuZ",
+  "repository": "github:QiyuZ/ClaudeCat",
   "type": "module",
   "scripts": {
     "dev": "vite",

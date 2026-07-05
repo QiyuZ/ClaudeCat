@@ -2,7 +2,9 @@
 // or weekly) is more constrained, so the cat looks tired when *either* runs low.
 // The mood is the single knob the character art reacts to — see characters/cat.tsx.
 
-export type Mood = "chill" | "tired" | "weary" | "sleeping";
+// "typing" is an activity overlay (cat is actively working), not a tiredness tier — it's
+// set in App from the live `active` signal, never returned by moodFor.
+export type Mood = "chill" | "typing" | "tired" | "weary" | "sleeping";
 export type DataStatus = "ok" | "stale" | "nodata";
 
 export interface Usage {

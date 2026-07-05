@@ -1,9 +1,11 @@
 [package]
 name = "claudecat"
 version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
+description = "A hand-drawn desktop cat that shows your Claude Code usage."
+authors = ["QiyuZ"]
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/QiyuZ/ClaudeCat"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

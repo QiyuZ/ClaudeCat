@@ -26,7 +26,7 @@ function loadSize(): CatSize {
 }
 
 function App() {
-  const { usage, status } = useUsage();
+  const { usage, status, active } = useUsage();
   const [install, setInstall] = useState<{ phase: "idle" | "working" | "done" | "error"; msg: string }>(
     { phase: "idle", msg: "" },
   );
@@ -122,7 +122,13 @@ function App() {
     invoke("window_action", { action: a }).catch(() => {});
   }
 
-  const mood = usage ? moodFor(usage) : "chill";
+  // Typing overrides the idle mood while a task runs — but never while rate-limited
+  // (asleep) or before we have data: a working cat should still be awake.
+  const mood = usage
+    ? active && !rateLimited
+      ? "typing"
+      : moodFor(usage)
+    : "chill";
 
   // Drag to move; a clean left-click toggles the weekly detail; right-click opens the menu.
   const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);

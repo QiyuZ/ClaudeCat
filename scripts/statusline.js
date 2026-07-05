@@ -151,8 +151,10 @@ function main() {
     /* non-fatal: widget just keeps its last value */
   }
 
-  // Always write a debug snapshot so we can diagnose what Claude Code sends.
-  try {
+  // Write a debug snapshot only when explicitly opted in (CC_PET_DEBUG=1). It contains a
+  // slice of the raw statusline stdin — cwd, repo, session id — so we never write it by
+  // default; it's a diagnostic for when a Claude Code version renames the rate_limits fields.
+  if (process.env.CC_PET_DEBUG) try {
     const rawSnippet = raw.length > 4000 ? raw.slice(0, 4000) + "\n... [truncated]" : raw;
     const debug = {
       time: new Date().toISOString(),
@@ -167,25 +169,6 @@ function main() {
       weekly,
     };
     fs.writeFileSync(path.join(dir, "cc-pet-debug.json"), JSON.stringify(debug, null, 2));
-    // Append a compact per-render trace so we can see whether rate_limits EVER arrives
-    // across a real session (the single-snapshot debug file above only shows the last
-    // render, which is often an idle one). Capped so it can't grow without bound.
-    const logLine = JSON.stringify({
-      t: new Date().toISOString(),
-      sid: parseOk ? String(input.session_id || "").slice(0, 8) : "",
-      apiMs: parseOk ? input.cost && input.cost.total_api_duration_ms : null,
-      rlFound: Object.keys(rl).length > 0,
-      five: fiveHour && fiveHour.used_percentage,
-      week: weekly && weekly.used_percentage,
-    }) + "\n";
-    const logFile = path.join(dir, "cc-pet-trace.log");
-    try {
-      const existing = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
-      const lines = (existing + logLine).split("\n").filter(Boolean).slice(-200);
-      fs.writeFileSync(logFile, lines.join("\n") + "\n");
-    } catch {
-      /* ignore */
-    }
   } catch {
     /* ignore */
   }

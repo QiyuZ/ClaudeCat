@@ -1,64 +1,155 @@
+<div align="center">
+
 # 🐱 ClaudeCat
 
-A tiny hand-drawn cat that lives in the top-right corner of your desktop and shows your
-**Claude Code** usage. The cat is transparent, frameless and draggable — the busier your
-budget gets, the more tired the cat looks:
+**A hand-drawn cat that lives on your desktop and shows your [Claude Code](https://claude.com/claude-code) usage in real time.**
 
-| Load (of the fuller of the 5h / weekly windows) | Cat |
+The cat sits transparent and frameless in the corner of your screen. The more of your
+budget you've burned, the more tired it looks — and when Claude Code is busy working, the
+cat starts typing along with it.
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-e8913a.svg)](LICENSE)
+![Platform: Windows](https://img.shields.io/badge/platform-Windows-5bb98b.svg)
+![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri%20v2%20%2B%20React-f97316.svg)
+
+<img src="docs/relaxed.gif" width="180" alt="relaxed cat grooming"> <img src="docs/typing.gif" width="180" alt="cat typing while a task runs"> <img src="docs/sleeping.gif" width="180" alt="cat asleep, rate-limited">
+
+</div>
+
+---
+
+## What it does
+
+ClaudeCat reads **your own** Claude Code usage and turns it into a mood. There's no separate
+login — it uses whatever account Claude Code is already signed into. Under the cat sits a
+slim **5-hour** fuel gauge with a live reset countdown; **hover** the cat to peek at your
+**weekly** budget as a row of little hearts.
+
+The cat's pose tracks whichever budget is tighter — `load = max(5h%, weekly%)`:
+
+<table>
+<thead>
+<tr><th>Cat</th><th>When</th><th>Mood</th></tr>
+</thead>
+<tbody>
+<tr>
+<td align="center"><img src="docs/relaxed.gif" width="130" alt="relaxed"></td>
+<td>Plenty of headroom — <b>load &lt; 90%</b></td>
+<td><b>Relaxed.</b> Sits and grooms itself on a lazy loop.</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/tired.gif" width="130" alt="tired"></td>
+<td>Getting low — <b>load ≥ 90%</b></td>
+<td><b>Tired.</b> Sitting up, droopy-eyed.</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/weary.gif" width="130" alt="weary"></td>
+<td>Right at the edge — <b>load ≥ 97%</b></td>
+<td><b>Weary.</b> Lying low, worn out.</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/sleeping.gif" width="130" alt="sleeping"></td>
+<td>Rate-limited — <b>load = 100%</b></td>
+<td><b>Asleep.</b> Curled up, with a soft <code>Reset in 02:40</code> breathing beside it.</td>
+</tr>
+<tr>
+<td align="center"><img src="docs/typing.gif" width="130" alt="typing"></td>
+<td>A task is running <i>(any budget)</i></td>
+<td><b>Typing.</b> Paws at the keyboard while Claude Code works, then settles back.</td>
+</tr>
+</tbody>
+</table>
+
+The **typing** pose is an overlay: whenever ClaudeCat detects an in-progress task it plays
+the working animation (unless the cat is fully rate-limited — an asleep cat stays asleep).
+
+## Interacting with the cat
+
+| Action | What happens |
 | --- | --- |
-| plenty of headroom (< 90%) | 🧘 relaxed, grooming itself |
-| nearly out (≥ 90%) | 😔 sitting, droopy-eyed |
-| right at the edge (≥ 97%) | 😩 lying down, worn out |
-| rate-limited (100%) | 😴 curled up asleep, with a faint **`Reset in 02:40`** breathing beside it |
+| **Hover** | Reveals the weekly hearts; they slip away when your pointer leaves. |
+| **Drag** | Moves the cat anywhere — it stays put where you drop it. |
+| **Right-click** | Opens the pet menu: animation speed, cat size (zoom), reset position, hide, quit. |
+| **Tray icon** | Show/hide, install statusline hook, reset position, toggle click-through, quit. |
 
-Under the cat is a slim **5h** usage bar (% used, matching Claude Code's `/status`) with a
-soft reset countdown. **Left-click** the cat to reveal the **weekly** figure.
+"Click-through" lets mouse clicks pass through the widget to the desktop behind it. All
+settings (size, animation speed) persist across restarts, and the app can start on login.
 
-**Interact:** left-click for the weekly detail · drag the cat to move it · **right-click**
-for a menu (animation speed, cat size / zoom, reset position, hide, quit). Settings persist
-across restarts.
+## Install
 
-![four cat states](preview.png)
+> ClaudeCat currently ships for **Windows**.
+
+1. Download and run the installer (`ClaudeCat_x.y.z_x64-setup.exe` or the `.msi`) from
+   [Releases](https://github.com/QiyuZ/ClaudeCat/releases).
+2. The cat appears in the top-right corner. As long as you're signed into Claude Code, it
+   wakes up on its own within a minute.
+3. *(Recommended)* Click **Connect ClaudeCat** — or tray → *Install statusline hook* — to
+   install the statusline data source (see below). If you already keep a custom `statusLine`,
+   ClaudeCat **refuses to overwrite it** and you can wire it up manually instead.
+
+That's it. Right-click for per-pet options; use the tray icon for the rest.
 
 ## Where the numbers come from
 
-ClaudeCat reads **your own** Claude Code usage — it does not ask you to log in again and it
-does not scrape anything. Claude Code renders a *statusline* on every turn and hands the
-script the official `rate_limits` payload (exact 5-hour + weekly percentages and reset
-times). ClaudeCat installs a small statusline hook that caches that payload to
-`~/.claude/cc-pet-usage.json`; the widget polls the cache. So the numbers are exactly what
-Claude Code itself reports, for whatever account Claude Code is already signed into. Zero
-extra auth, and it works for any user who installs the app.
+ClaudeCat never asks you to log in and never scrapes the web. It reads your usage from up to
+**two local sources**, preferring whichever has fresh, real data:
 
-Two robustness notes baked into the hook/widget:
+**1. The statusline hook (preferred).** Claude Code renders a *statusline* on each turn and
+hands the script an official `rate_limits` payload — exact 5-hour and weekly percentages with
+reset times. ClaudeCat installs a tiny hook (`scripts/statusline.js`) that caches this to
+`~/.claude/cc-pet-usage.json`. This payload only appears for **Pro/Max** accounts and only
+**after the first API response** in a session, so the hook carries forward the last-known
+values between responses (up to 3 hours, after which stale data is dropped rather than shown).
 
-- `rate_limits` only appears **after an API response** in a session, so some renders omit
-  it. The hook **carries forward** the last-known 5h/weekly values instead of blanking them,
-  so the numbers don't flicker between responses — but only for up to **3 hours**, after
-  which stale data is dropped rather than shown (the 5h window has rolled by then, so an
-  older figure would just disagree with `/status`).
-- `resets_at` is Unix **epoch seconds**; the hook converts it to a real timestamp and the
-  widget shows the true countdown to it.
+**2. The OAuth usage endpoint (fallback).** Some Claude Code versions don't emit `rate_limits`
+to the statusline at all. When the hook isn't delivering fresh data, ClaudeCat falls back to
+the same endpoint Claude Code's own `/usage` command uses — see [Privacy & security](#privacy--security)
+for exactly what this reads and sends.
 
-## Install (end users)
+Either way, the numbers are exactly what Claude Code itself reports, for whatever account
+it's signed into.
 
-1. Download and run the installer (`ClaudeCat_x.y.z_x64.msi`) from Releases.
-2. The cat appears top-right. On first run it shows **"Waiting for Claude Code…"** with a
-   **Connect ClaudeCat** button — click it (or the tray icon → *Install statusline hook*).
-   This registers the hook in `~/.claude/settings.json`. If you already have a custom
-   `statusLine`, ClaudeCat refuses to overwrite it — see [Manual setup](#manual-setup).
-3. Send a message in any Claude Code session. Within a few seconds the cat wakes up with
-   live data.
+## Privacy & security
 
-Right-click the cat for per-pet options (animation, size, reset position, hide, quit). The
-tray icon also has: show/hide, install hook, reset position, toggle click-through (let clicks
-pass through to the desktop), and quit. The app can start on login.
+ClaudeCat is a local desktop widget. Here is **everything** it touches — all of it auditable
+in this repo:
 
-### Manual setup
+- **No separate login, no telemetry, no analytics.** ClaudeCat has no backend of its own and
+  phones no home.
+- **Files it reads:**
+  - `~/.claude/cc-pet-usage.json` — the cache written by its own statusline hook.
+  - `~/.claude/.credentials.json` — **only** for the OAuth fallback, to read the access token
+    Claude Code already maintains. ClaudeCat never copies, logs, or transmits this token
+    anywhere except the request below.
+  - modification **timestamps** (not contents) of transcript files under `~/.claude/projects`
+    — this is how it knows a task is in progress and plays the typing animation.
+- **The one network call it makes:** a `GET` to `https://api.anthropic.com/api/oauth/usage`
+  (Anthropic's official server) with your token, to read your own usage — the same call Claude
+  Code makes internally. The response is normalized to percentages + reset times and cached to
+  `~/.claude/cc-pet-usage-oauth.json`; **no token is stored on disk**.
+- **Undocumented-endpoint caveat:** `/api/oauth/usage` is not a documented public API and
+  could change without notice. If it does, ClaudeCat simply falls back to the statusline path.
+- **Debugging is opt-in:** the hook only writes a raw-payload dump (`~/.claude/cc-pet-debug.json`)
+  when you set `CC_PET_DEBUG=1`.
 
-If you keep your own statusline, add ClaudeCat as a pass-through instead. The hook prints a
-short `🐱 5h .. · wk .. left` line, so you can chain it, or point `settings.json` at the
-bundled script:
+If you'd rather not use the OAuth fallback at all, you can run statusline-only — open an issue
+and it's a small change to gate it off.
+
+## Build from source
+
+Requires **Node** and the **Rust MSVC toolchain** (Rust + Visual Studio C++ Build Tools) for
+Tauri v2.
+
+```powershell
+npm install
+npm run tauri dev     # dev run with hot reload (first compile takes a few minutes)
+npm run tauri build   # -> .msi / .exe in src-tauri/target/release/bundle
+```
+
+### Manual statusline setup
+
+If you keep your own statusline, chain ClaudeCat as a pass-through — the hook prints a short
+`🐱 5h .. · wk .. left` line — or point `settings.json` directly at the bundled script:
 
 ```jsonc
 // ~/.claude/settings.json
@@ -67,50 +158,48 @@ bundled script:
 }
 ```
 
-Set the env var `CC_PET_DEBUG=1` to also dump the raw statusline stdin to
-`~/.claude/cc-pet-debug.json` — handy if a Claude Code version renames the `rate_limits`
-fields.
+## How it works
 
-## Develop
-
-Requires Node and the Rust MSVC toolchain (Rust + VS C++ Build Tools) for Tauri v2.
-
-```powershell
-npm install
-npm run tauri dev     # dev run (first compile takes a few minutes)
-npm run tauri build   # produce .msi / .exe in src-tauri/target/release/bundle
+```
+Claude Code ──▶ statusline hook ──▶ cc-pet-usage.json ─┐
+                                                       ├─▶ Rust core (merge + poll 3s) ──▶ React UI
+OAuth /usage ──────────────────▶ cc-pet-usage-oauth.json ┘        │
+transcript mtimes ───────────────────────────────────────────────┘  (task-active → typing)
 ```
 
-The cat art is sliced from the four hand-drawn strips in `src/pic/` by a one-off script that
-knocks out the white background, auto-detects the frames and trims them to transparent PNGs:
+| File | Responsibility |
+| --- | --- |
+| [`src/pet/stateMachine.ts`](src/pet/stateMachine.ts) | Turns usage % into a mood (`load = max(5h, weekly)`) and the reset-countdown helpers. |
+| [`src/characters/cat.tsx`](src/characters/cat.tsx) | The only file that knows what the animal looks like: maps each mood to sprite frames (relaxed grooming loop, endless typing loop). Swap it to add a dog. |
+| [`src/components/QuotaGauge.tsx`](src/components/QuotaGauge.tsx) | The 5-hour fuel gauge (paw + glossy pill) and reset countdown. |
+| [`src/components/WeeklyHearts.tsx`](src/components/WeeklyHearts.tsx) | The weekly budget as a hover-revealed heart health-bar. |
+| [`src/components/PetMenu.tsx`](src/components/PetMenu.tsx) | The right-click menu (animation, size, actions). |
+| [`src/pet/useUsage.ts`](src/pet/useUsage.ts) | Subscribes to the Rust core; distinguishes "no data" from a real 0%. |
+| [`src/App.tsx`](src/App.tsx) | Composition, onboarding, drag / hover / menu, and window sizing. |
+| [`scripts/statusline.js`](scripts/statusline.js) | The Claude Code statusline hook that caches `rate_limits`. |
+| [`src-tauri/src/lib.rs`](src-tauri/src/lib.rs) | The transparent always-on-top window, tray, autostart, the two data sources (cache merge + OAuth fallback), task-activity detection, and the hook installer. |
+
+### Sprite pipeline
+
+The art is sliced from four hand-drawn strips in `src/pic/` into transparent per-frame PNGs:
 
 ```powershell
 pip install Pillow numpy scipy
-python scripts/process_sprites.py   # -> src/assets/cat/*.png
-python scripts/preview_widget.py    # -> preview.png (optional layout check)
+python scripts/process_sprites.py    # src/pic/*.png -> src/assets/cat/*.png
+python scripts/make_state_gifs.py    # src/assets/cat/*.png -> docs/*.gif (README art)
 ```
-
-## How it works
-
-- `src/pet/stateMachine.ts` — turns usage % into a mood (`load = max(5h, weekly)`), plus the
-  reset-countdown helpers.
-- `src/characters/cat.tsx` — the only file that knows what the character looks like: maps
-  each mood to sprite frames (the relaxed mood plays an occasional idle paw-lick). Swap this
-  to add a dog later.
-- `src/components/QuotaGauge.tsx` — the 5h usage bar and reset countdown under the cat
-  (weekly shows on left-click, from `App.tsx`).
-- `src/components/PetMenu.tsx` — the right-click menu (animation, cat size, actions).
-- `src/App.tsx` — composition, first-run onboarding, drag/right-click handling; asks Rust to
-  resize the transparent window to fit each layout so empty area never eats desktop clicks.
-- `scripts/statusline.js` — the Claude Code statusline hook that caches `rate_limits`
-  (carries forward last-known values when a render omits it).
-- `src-tauri/src/lib.rs` — transparent, frameless, always-on-top, no-taskbar window;
-  top-right positioning; tray menu; click-through; autostart; usage-cache polling; window
-  sizing; and the hook installer (which will not clobber a foreign `statusLine`).
 
 ## Roadmap
 
-- **V1 (this)** — transparent sprite cat, real 5h/weekly data via statusline, robust reset
-  countdown, right-click controls (animation / size), onboarding, MSI packaging.
-- **Next** — "actively working" pose from JSONL activity (the typing-cat frames are already
-  sliced and waiting); weekly heat-map; optional dog character.
+- ✅ Transparent sprite cat with real 5h / weekly data, robust reset countdowns.
+- ✅ OAuth usage fallback for Claude Code versions that don't emit `rate_limits`.
+- ✅ Hover-reveal weekly hearts; "actively working" typing pose from live task detection.
+- ⬜ Optional dog (or other) character; weekly heat-map; macOS / Linux builds.
+
+## Credits & license
+
+Built with [Tauri v2](https://tauri.app) + React + TypeScript. Cat art hand-drawn for this
+project. Data-layer inspiration from [`ohugonnot/claude-code-statusline`](https://github.com/ohugonnot/claude-code-statusline)
+and [`ccusage`](https://github.com/ryoppippi/ccusage).
+
+Released under the [MIT License](LICENSE) © 2026 QiyuZ.

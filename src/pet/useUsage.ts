@@ -17,6 +17,8 @@ interface RawSnapshot {
 interface UsagePayload {
   status: DataStatus;
   data: RawSnapshot | null;
+  /** True while a Claude Code task is in progress (drives the cat's typing pose). */
+  active?: boolean;
 }
 
 function toMs(iso: string | null | undefined): number | null {
@@ -25,9 +27,10 @@ function toMs(iso: string | null | undefined): number | null {
   return Number.isNaN(t) ? null : t;
 }
 
-function parse(payload: UsagePayload): { usage: Usage | null; status: DataStatus } {
+function parse(payload: UsagePayload): { usage: Usage | null; status: DataStatus; active: boolean } {
+  const active = payload.active === true;
   if (payload.status === "nodata" || !payload.data) {
-    return { usage: null, status: "nodata" };
+    return { usage: null, status: "nodata", active };
   }
   const d = payload.data;
   // A snapshot with neither window populated carries no real usage — Claude Code only
@@ -37,7 +40,7 @@ function parse(payload: UsagePayload): { usage: Usage | null; status: DataStatus
   const hasFive = typeof d.five_hour?.used_percentage === "number";
   const hasWeekly = typeof d.weekly?.used_percentage === "number";
   if (!hasFive && !hasWeekly) {
-    return { usage: null, status: "nodata" };
+    return { usage: null, status: "nodata", active };
   }
   const usage: Usage = {
     fiveHourPercent: clampPct(d.five_hour?.used_percentage),
@@ -46,7 +49,7 @@ function parse(payload: UsagePayload): { usage: Usage | null; status: DataStatus
     weeklyResetsAt: toMs(d.weekly?.resets_at),
     updatedAt: toMs(d.updated_at) ?? Date.now(),
   };
-  return { usage, status: payload.status };
+  return { usage, status: payload.status, active };
 }
 
 function clampPct(n: number | null | undefined): number {
@@ -54,10 +57,11 @@ function clampPct(n: number | null | undefined): number {
   return Math.max(0, Math.min(100, n));
 }
 
-export function useUsage(): { usage: Usage | null; status: DataStatus } {
-  const [state, setState] = useState<{ usage: Usage | null; status: DataStatus }>({
+export function useUsage(): { usage: Usage | null; status: DataStatus; active: boolean } {
+  const [state, setState] = useState<{ usage: Usage | null; status: DataStatus; active: boolean }>({
     usage: null,
     status: "nodata",
+    active: false,
   });
 
   useEffect(() => {
