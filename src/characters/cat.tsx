@@ -15,8 +15,6 @@ import sad3 from "../assets/cat/sad-3.png";
 
 interface CatProps {
   mood: Mood;
-  /** Dim + desaturate when the data is stale/offline. */
-  dimmed?: boolean;
   /** Idle rest cadence in ms (from the tray "Animation" menu); 0 = still, breathe only. */
   restMs?: number;
 }
@@ -48,7 +46,7 @@ function preload() {
   }
 }
 
-export function Cat({ mood, dimmed, restMs }: CatProps) {
+export function Cat({ mood, restMs }: CatProps) {
   const { frames, frameMs, restMs: defaultRest } = FRAMES[mood];
   const rest = restMs ?? defaultRest;
   const [i, setI] = useState(0);
@@ -74,7 +72,7 @@ export function Cat({ mood, dimmed, restMs }: CatProps) {
 
   return (
     <img
-      className={`cat cat--${mood} ${dimmed ? "cat--dim" : ""}`}
+      className={`cat cat--${mood}`}
       src={frames[i]}
       alt={`cat feeling ${mood}`}
       draggable={false}

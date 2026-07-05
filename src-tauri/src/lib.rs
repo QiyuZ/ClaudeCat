@@ -13,6 +13,14 @@ use tauri::{
 const STATUSLINE_JS: &str = include_str!("../../scripts/statusline.js");
 
 const STALE_AFTER_SECS: u64 = 10 * 60;
+// OAuth /usage fallback: the same undocumented endpoint Claude Code's own `/usage`
+// command uses. We hit it only when the statusline path isn't delivering fresh data.
+// The User-Agent MUST look like Claude Code or the endpoint aggressively 429s.
+const OAUTH_USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
+const OAUTH_BETA_HEADER: &str = "oauth-2025-04-20";
+const CLAUDE_CODE_UA: &str = "claude-code/2.1.201";
+const STATUSLINE_CACHE: &str = "cc-pet-usage.json";
+const OAUTH_CACHE: &str = "cc-pet-usage-oauth.json";
 // Default window size at first paint; the frontend drives real sizing via set_window so
 // the transparent window always hugs the current layout (cat size, weekly chip, setup).
 const SIZE_DEFAULT: (f64, f64) = (156.0, 172.0);
@@ -27,30 +35,64 @@ fn claude_dir() -> Option<std::path::PathBuf> {
     dirs::home_dir().map(|h| h.join(".claude"))
 }
 
-/// Read + classify the usage cache into the {status, data} envelope the UI expects.
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
+
+/// True if a snapshot carries at least one real usage number (not the all-null shape a
+/// fresh/API-less statusline render leaves behind).
+fn snapshot_has_data(d: &Value) -> bool {
+    let has = |k: &str| {
+        d.get(k)
+            .and_then(|w| w.get("used_percentage"))
+            .and_then(|x| x.as_f64())
+            .is_some()
+    };
+    has("five_hour") || has("weekly")
+}
+
+/// Load one cache source as (data, updated_secs, has_data), or None if absent/unparseable.
+fn load_source(name: &str) -> Option<(Value, u64, bool)> {
+    let file = claude_dir()?.join(name);
+    let text = std::fs::read_to_string(&file).ok()?;
+    let data: Value = serde_json::from_str(&text).ok()?;
+    let updated = data.get("updated_at").and_then(|v| v.as_str()).and_then(parse_iso_secs)?;
+    let has = snapshot_has_data(&data);
+    Some((data, updated, has))
+}
+
+/// Read + classify usage into the {status, data} envelope the UI expects. Two sources
+/// feed the cache: the statusline hook (`cc-pet-usage.json`) and the OAuth fallback
+/// (`cc-pet-usage-oauth.json`). We prefer whichever actually has data, then whichever is
+/// newer — so statusline wins when it works, and OAuth transparently fills in when it
+/// doesn't (the common case, since `rate_limits` isn't emitted on every machine).
 fn read_usage() -> Value {
-    let Some(file) = claude_dir().map(|d| d.join("cc-pet-usage.json")) else {
-        return json!({ "status": "nodata", "data": null });
-    };
-    let Ok(text) = std::fs::read_to_string(&file) else {
-        return json!({ "status": "nodata", "data": null });
-    };
-    let Ok(data) = serde_json::from_str::<Value>(&text) else {
-        return json!({ "status": "nodata", "data": null });
-    };
+    let mut cands: Vec<(Value, u64, bool)> = Vec::new();
+    if let Some(s) = load_source(STATUSLINE_CACHE) {
+        cands.push(s);
+    }
+    if let Some(s) = load_source(OAUTH_CACHE) {
+        cands.push(s);
+    }
+    // has_data first (true before false), then newest updated_at first.
+    cands.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)));
 
-    // Staleness from updated_at (ISO string) vs now.
-    let stale = data
-        .get("updated_at")
-        .and_then(|v| v.as_str())
-        .and_then(parse_iso_secs)
-        .map(|updated| {
-            let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-            now.saturating_sub(updated) > STALE_AFTER_SECS
-        })
-        .unwrap_or(true);
-
+    let Some((data, updated, has)) = cands.into_iter().next() else {
+        return json!({ "status": "nodata", "data": null });
+    };
+    if !has {
+        // A file exists but neither source has real numbers yet.
+        return json!({ "status": "nodata", "data": null });
+    }
+    let stale = now_secs().saturating_sub(updated) > STALE_AFTER_SECS;
     json!({ "status": if stale { "stale" } else { "ok" }, "data": data })
+}
+
+/// Whether the statusline path alone already has fresh, real data — if so the OAuth
+/// poller stays quiet to avoid needless calls to the aggressively-rate-limited endpoint.
+fn statusline_fresh_with_data() -> bool {
+    matches!(load_source(STATUSLINE_CACHE), Some((_, updated, true))
+        if now_secs().saturating_sub(updated) <= STALE_AFTER_SECS)
 }
 
 /// Minimal ISO-8601 -> epoch seconds (handles the "...Z" form our hook writes).
@@ -71,6 +113,133 @@ fn parse_iso_secs(s: &str) -> Option<u64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     Some((days * 86400 + h * 3600 + mi * 60 + se).max(0) as u64)
+}
+
+/// epoch seconds -> "YYYY-MM-DDTHH:MM:SSZ" (the shape parse_iso_secs + the UI expect).
+fn now_iso() -> String {
+    let secs = now_secs() as i64;
+    let days = secs.div_euclid(86400);
+    let rem = secs.rem_euclid(86400);
+    let (h, mi, s) = (rem / 3600, (rem % 3600) / 60, rem % 60);
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+/// Read the OAuth access token from ~/.claude/.credentials.json (the same login Claude
+/// Code already maintains — no separate sign-in). Claude Code refreshes this file as you
+/// use it, so the token stays valid without us implementing token refresh.
+fn read_oauth_token() -> Option<String> {
+    let file = claude_dir()?.join(".credentials.json");
+    let text = std::fs::read_to_string(&file).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    let obj = v.get("claudeAiOauth").unwrap_or(&v);
+    for k in ["accessToken", "access_token", "token"] {
+        if let Some(t) = obj.get(k).and_then(|x| x.as_str()) {
+            if !t.is_empty() {
+                return Some(t.to_string());
+            }
+        }
+    }
+    None
+}
+
+enum FetchResult {
+    Body(String),
+    RateLimited,
+    Other,
+}
+
+fn fetch_oauth_usage(token: &str) -> FetchResult {
+    let req = ureq::get(OAUTH_USAGE_URL)
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("anthropic-beta", OAUTH_BETA_HEADER)
+        .set("User-Agent", CLAUDE_CODE_UA)
+        .timeout(Duration::from_secs(15));
+    match req.call() {
+        Ok(resp) => resp.into_string().map(FetchResult::Body).unwrap_or(FetchResult::Other),
+        Err(ureq::Error::Status(429, _)) => FetchResult::RateLimited,
+        Err(_) => FetchResult::Other,
+    }
+}
+
+/// Convert one `{ "utilization": .., "resets_at": ".." }` window to our normalized
+/// `{ "used_percentage": .., "resets_at": ".." }` shape.
+fn norm_oauth_window(w: Option<&Value>) -> Option<Value> {
+    let w = w?;
+    let util = w.get("utilization").and_then(|x| x.as_f64())?;
+    let mut out = json!({ "used_percentage": util });
+    if let Some(r) = w.get("resets_at").and_then(|x| x.as_str()) {
+        out["resets_at"] = json!(r);
+    }
+    Some(out)
+}
+
+/// Parse an OAuth /usage body and atomically write our normalized snapshot. Returns
+/// false (writing nothing) if the body has no usable window, so a bad response never
+/// clobbers a good cache.
+fn write_oauth_snapshot(body: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let five = norm_oauth_window(v.get("five_hour"));
+    let weekly = norm_oauth_window(v.get("seven_day"));
+    if five.is_none() && weekly.is_none() {
+        return false;
+    }
+    let snapshot = json!({
+        "five_hour": five,
+        "weekly": weekly,
+        "updated_at": now_iso(),
+        "source": "oauth",
+    });
+    let Some(dir) = claude_dir() else {
+        return false;
+    };
+    let file = dir.join(OAUTH_CACHE);
+    let tmp = dir.join(format!("{OAUTH_CACHE}.tmp"));
+    if std::fs::write(&tmp, serde_json::to_string_pretty(&snapshot).unwrap()).is_err() {
+        return false;
+    }
+    std::fs::rename(&tmp, &file).is_ok()
+}
+
+/// Background poller for the OAuth fallback. Stays quiet while the statusline path is
+/// delivering fresh data; otherwise fetches every ~60s, backing off on 429.
+fn oauth_poll_loop() {
+    let base = 60u64;
+    let mut interval = base;
+    std::thread::sleep(Duration::from_secs(3)); // let the app finish launching
+    loop {
+        if statusline_fresh_with_data() {
+            std::thread::sleep(Duration::from_secs(base));
+            continue;
+        }
+        match read_oauth_token() {
+            Some(token) => match fetch_oauth_usage(&token) {
+                FetchResult::Body(body) => {
+                    write_oauth_snapshot(&body);
+                    interval = base; // success resets any backoff
+                    std::thread::sleep(Duration::from_secs(interval));
+                }
+                FetchResult::RateLimited => {
+                    interval = (interval * 2).min(600); // exponential backoff, cap 10 min
+                    std::thread::sleep(Duration::from_secs(interval));
+                }
+                FetchResult::Other => std::thread::sleep(Duration::from_secs(120)),
+            },
+            None => std::thread::sleep(Duration::from_secs(120)),
+        }
+    }
 }
 
 #[tauri::command]
@@ -96,8 +265,18 @@ fn hook_installed() -> bool {
 
 #[tauri::command]
 fn set_window(window: WebviewWindow, w: f64, h: f64) {
+    // Resize in place, keeping the RIGHT edge fixed (the cat is right-anchored) so growing
+    // the panel — weekly popup, menu — never shifts the cat or snaps it back to the corner
+    // after the user has dragged the widget somewhere else. Position is only reset to the
+    // corner explicitly, via launch and the "reset position" action.
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let old_pos = window.outer_position().ok();
+    let old_w = window.outer_size().map(|s| s.width as i32).ok();
     let _ = window.set_size(LogicalSize::new(w, h));
-    position_top_right(&window);
+    if let (Some(pos), Some(ow)) = (old_pos, old_w) {
+        let new_w = (w * scale).round() as i32;
+        let _ = window.set_position(PhysicalPosition::new(pos.x + (ow - new_w), pos.y));
+    }
 }
 
 /// Menu actions the in-app right-click menu can trigger.
@@ -212,6 +391,11 @@ pub fn run() {
                 let _ = handle.emit("usage-updated", read_usage());
                 std::thread::sleep(Duration::from_secs(3));
             });
+
+            // Fallback data source: fetch usage straight from the OAuth endpoint whenever
+            // the statusline hook isn't providing fresh data. Writes cc-pet-usage-oauth.json,
+            // which the poll above picks up like any other source.
+            std::thread::spawn(oauth_poll_loop);
 
             Ok(())
         })

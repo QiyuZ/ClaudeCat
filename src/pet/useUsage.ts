@@ -30,6 +30,15 @@ function parse(payload: UsagePayload): { usage: Usage | null; status: DataStatus
     return { usage: null, status: "nodata" };
   }
   const d = payload.data;
+  // A snapshot with neither window populated carries no real usage — Claude Code only
+  // emits `rate_limits` for Pro/Max accounts after the first API response, so a fresh or
+  // API-less render leaves both null. Reporting that as a confident 0% used is a lie;
+  // surface it as "waiting for usage" instead so the widget doesn't flatline at 0%.
+  const hasFive = typeof d.five_hour?.used_percentage === "number";
+  const hasWeekly = typeof d.weekly?.used_percentage === "number";
+  if (!hasFive && !hasWeekly) {
+    return { usage: null, status: "nodata" };
+  }
   const usage: Usage = {
     fiveHourPercent: clampPct(d.five_hour?.used_percentage),
     weeklyPercent: clampPct(d.weekly?.used_percentage),

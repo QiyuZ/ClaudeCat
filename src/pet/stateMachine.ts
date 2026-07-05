@@ -55,12 +55,29 @@ export function isRateLimited(u: Usage): boolean {
 /** Data older than this reads as "offline" — cat dims, numbers fade. */
 export const STALE_AFTER_MS = 10 * 60 * 1000;
 
+export const FIVE_HOUR_MS = 5 * 60 * 60 * 1000;
+export const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** The soonest reset instant across both windows. */
 export function nextReset(u: Usage): number | null {
   const a = u.fiveHourResetsAt ?? Infinity;
   const b = u.weeklyResetsAt ?? Infinity;
   const m = Math.min(a, b);
   return Number.isFinite(m) ? m : null;
+}
+
+/**
+ * A reset instant that's guaranteed to be in the future. Windows are periodic (5h / 7d),
+ * so if the reported reset already passed — because it just rolled over, or because the
+ * machine clock disagrees with the server that issued the timestamp — we advance it by
+ * whole periods until it's ahead of now. On a correctly-clocked machine with a future
+ * reset this is a no-op.
+ */
+export function futureReset(resetsAt: number | null, periodMs: number, now = Date.now()): number | null {
+  if (resetsAt == null) return null;
+  if (resetsAt > now) return resetsAt;
+  const k = Math.ceil((now - resetsAt) / periodMs);
+  return resetsAt + k * periodMs;
 }
 
 /** "2h 14m" / "3d 4h" style compact countdown. */

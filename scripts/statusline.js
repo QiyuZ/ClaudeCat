@@ -58,16 +58,57 @@ function normWindow(w) {
   return Object.keys(out).length ? out : null;
 }
 
+function deepFind(obj, keyCandidates, maxDepth) {
+  if (!obj || typeof obj !== "object" || maxDepth <= 0) return undefined;
+  for (const k of keyCandidates) {
+    if (obj[k] != null) return obj[k];
+  }
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const found = deepFind(item, keyCandidates, maxDepth - 1);
+      if (found != null) return found;
+    }
+  } else {
+    for (const key of Object.keys(obj)) {
+      if (["messages", "prompt", "conversation", "tools", "args", "text"].includes(key)) continue;
+      const found = deepFind(obj[key], keyCandidates, maxDepth - 1);
+      if (found != null) return found;
+    }
+  }
+  return undefined;
+}
+
+function recurseKeys(obj, depth) {
+  if (!obj || typeof obj !== "object" || depth <= 0) return [];
+  const keys = Object.keys(obj);
+  if (depth <= 1) return keys;
+  const nested = [];
+  for (const key of keys) {
+    const child = recurseKeys(obj[key], depth - 1);
+    for (const ck of child) {
+      nested.push(key + "." + ck);
+    }
+  }
+  return nested;
+}
+
 function main() {
   const raw = readStdin();
   let input = {};
+  let parseOk = false;
   try {
     input = JSON.parse(raw);
+    parseOk = true;
   } catch {
     /* ignore malformed input */
   }
 
-  const rl = input.rate_limits || input.rateLimits || {};
+  // Try top-level rate_limits first, then deep-search the payload.
+  let rl = input.rate_limits || input.rateLimits || {};
+  if (!Object.keys(rl).length) {
+    const found = deepFind(input, ["rate_limits", "rateLimits", "rate_limits"], 4);
+    if (found && typeof found === "object" && !Array.isArray(found)) rl = found;
+  }
   const fiveHour = normWindow(pick(rl, ["five_hour", "fiveHour", "session", "5h"]));
   const weekly = normWindow(pick(rl, ["seven_day", "sevenDay", "weekly", "week", "7d"]));
 
@@ -78,9 +119,17 @@ function main() {
   // so many renders legitimately omit it. When a window is missing this time, carry
   // forward the last-known value from the cache instead of nulling it out — otherwise
   // the widget's numbers would blink away between API responses.
+  //
+  // But carry-forward has a limit: the 5-hour window rolls every 5h, so a value more
+  // than a few hours old is meaningless. We drop anything older than MAX_CARRY_MS so
+  // yesterday's numbers can never masquerade as current — better to show nothing than
+  // a stale figure that disagrees with `/status`.
+  const MAX_CARRY_MS = 3 * 60 * 60 * 1000; // 3 hours
   let prev = {};
   try {
-    prev = JSON.parse(fs.readFileSync(file, "utf8")) || {};
+    const cached = JSON.parse(fs.readFileSync(file, "utf8")) || {};
+    const age = Date.now() - Date.parse(cached.updated_at || 0);
+    if (Number.isFinite(age) && age <= MAX_CARRY_MS) prev = cached;
   } catch {
     /* no prior cache */
   }
@@ -98,15 +147,47 @@ function main() {
     const tmp = file + ".tmp";
     fs.writeFileSync(tmp, JSON.stringify(snapshot, null, 2));
     fs.renameSync(tmp, file);
-    if (process.env.CC_PET_DEBUG === "1") {
-      try {
-        fs.writeFileSync(path.join(dir, "cc-pet-debug.json"), raw || "{}");
-      } catch {
-        /* ignore */
-      }
-    }
   } catch {
     /* non-fatal: widget just keeps its last value */
+  }
+
+  // Always write a debug snapshot so we can diagnose what Claude Code sends.
+  try {
+    const rawSnippet = raw.length > 4000 ? raw.slice(0, 4000) + "\n... [truncated]" : raw;
+    const debug = {
+      time: new Date().toISOString(),
+      parseOk,
+      rawLength: raw.length,
+      rawPreview: rawSnippet,
+      inputKeys: parseOk ? Object.keys(input) : [],
+      inputKeys_nested: parseOk ? recurseKeys(input, 2) : [],
+      rlKeys: Object.keys(rl),
+      rlFound: Object.keys(rl).length > 0,
+      fiveHour,
+      weekly,
+    };
+    fs.writeFileSync(path.join(dir, "cc-pet-debug.json"), JSON.stringify(debug, null, 2));
+    // Append a compact per-render trace so we can see whether rate_limits EVER arrives
+    // across a real session (the single-snapshot debug file above only shows the last
+    // render, which is often an idle one). Capped so it can't grow without bound.
+    const logLine = JSON.stringify({
+      t: new Date().toISOString(),
+      sid: parseOk ? String(input.session_id || "").slice(0, 8) : "",
+      apiMs: parseOk ? input.cost && input.cost.total_api_duration_ms : null,
+      rlFound: Object.keys(rl).length > 0,
+      five: fiveHour && fiveHour.used_percentage,
+      week: weekly && weekly.used_percentage,
+    }) + "\n";
+    const logFile = path.join(dir, "cc-pet-trace.log");
+    try {
+      const existing = fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8") : "";
+      const lines = (existing + logLine).split("\n").filter(Boolean).slice(-200);
+      fs.writeFileSync(logFile, lines.join("\n") + "\n");
+    } catch {
+      /* ignore */
+    }
+  } catch {
+    /* ignore */
   }
 
   // Pass-through line for the terminal statusline.

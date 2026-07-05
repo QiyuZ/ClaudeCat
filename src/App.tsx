@@ -3,9 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Cat } from "./characters/cat";
 import { QuotaGauge } from "./components/QuotaGauge";
+import { WeeklyHearts } from "./components/WeeklyHearts";
 import { PetMenu, ANIM_MS, type AnimSpeed, type CatSize } from "./components/PetMenu";
 import { useUsage } from "./pet/useUsage";
-import { countdown, isRateLimited, moodFor } from "./pet/stateMachine";
+import { isRateLimited, moodFor } from "./pet/stateMachine";
 import "./App.css";
 
 // On-screen cat sizes ("zoom"). w = window width, catH = cat stage height in px.
@@ -31,13 +32,14 @@ function App() {
   );
   const [anim, setAnim] = useState<AnimSpeed>(loadAnim);
   const [size, setSize] = useState<CatSize>(loadSize);
-  const [showWeekly, setShowWeekly] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  // Weekly hearts are a hover reveal: they show while the pointer is over the widget and
+  // slip away once it leaves — never a sticky panel you have to click closed again.
+  const [weeklyHover, setWeeklyHover] = useState(false);
   const [hookReady, setHookReady] = useState(false);
   const [, tick] = useState(0);
 
   const nodata = status === "nodata" || !usage;
-  const dimmed = status === "stale";
   const rateLimited = usage ? isRateLimited(usage) : false;
 
   // Fast ticking only while asleep (for the mm:ss whisper); slow otherwise.
@@ -48,12 +50,14 @@ function App() {
   }, [rateLimited]);
 
   // Size the transparent window to hug the current layout so empty area never eats
-  // desktop clicks: setup card, open menu, or cat (+ optional weekly chip).
+  // desktop clicks: setup card, open menu, or cat (+ 5h gauge, + optional weekly chip).
+  const weeklyShown = weeklyHover && !menuOpen;
+  const bodyH = SIZES[size].catH + 46 + (weeklyShown ? 44 : 0);
   const dims: [number, number] = nodata
     ? [216, 268]
     : menuOpen
     ? [220, 384]
-    : [Math.max(SIZES[size].w, 140), SIZES[size].catH + 44 + (showWeekly ? 30 : 0) + 8];
+    : [Math.max(SIZES[size].w, 150), bodyH];
   const lastDims = useRef<string>("");
   useEffect(() => {
     const key = dims.join("x");
@@ -120,35 +124,37 @@ function App() {
 
   const mood = usage ? moodFor(usage) : "chill";
 
-  // Drag to move; a clean left-click toggles the weekly chip; right-click opens the menu.
-  const press = useRef<{ x: number; y: number } | null>(null);
+  // Drag to move; a clean left-click toggles the weekly detail; right-click opens the menu.
+  const press = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   function onPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return;
-    press.current = { x: e.clientX, y: e.clientY };
+    press.current = { x: e.clientX, y: e.clientY, moved: false };
   }
   function onPointerMove(e: React.PointerEvent) {
     const p = press.current;
     if (!p) return;
     if (Math.abs(e.clientX - p.x) > 3 || Math.abs(e.clientY - p.y) > 3) {
+      p.moved = true;
       press.current = null;
       getCurrentWindow().startDragging().catch(() => {});
     }
   }
   function onPointerUp() {
-    const p = press.current;
+    // Drag is handled in onPointerMove; a clean click no longer toggles anything, since
+    // the weekly detail is now a hover reveal.
     press.current = null;
-    if (p && !nodata && !menuOpen) setShowWeekly((v) => !v);
   }
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    setShowWeekly(false);
     setMenuOpen(true);
   }
 
-  const weeklyUsed = usage ? Math.round(usage.weeklyPercent) : 0;
-
   return (
-    <div className="widget">
+    <div
+      className="widget"
+      onMouseEnter={() => setWeeklyHover(true)}
+      onMouseLeave={() => setWeeklyHover(false)}
+    >
       <div
         className="stage"
         style={{ height: SIZES[size].catH, cursor: "grab" }}
@@ -156,18 +162,14 @@ function App() {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onContextMenu={onContextMenu}
-        title="Drag to move · click for weekly · right-click for options"
+        title="Drag to move · right-click for options"
       >
-        <Cat mood={nodata ? "chill" : mood} dimmed={dimmed} restMs={ANIM_MS[anim]} />
+        <Cat mood={nodata ? "chill" : mood} restMs={ANIM_MS[anim]} />
       </div>
 
       {!nodata && usage && <QuotaGauge usage={usage} />}
 
-      {!nodata && usage && showWeekly && !menuOpen && (
-        <div className="weekly-chip">
-          Weekly {weeklyUsed}% · resets in {countdown(usage.weeklyResetsAt)}
-        </div>
-      )}
+      {!nodata && usage && weeklyShown && <WeeklyHearts usage={usage} />}
 
       {nodata && (
         <div className="setup">
