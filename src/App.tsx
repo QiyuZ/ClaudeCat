@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import { Cat } from "./characters/cat";
 import { QuotaGauge } from "./components/QuotaGauge";
 import { WeeklyHearts } from "./components/WeeklyHearts";
@@ -37,6 +38,7 @@ function App() {
   // slip away once it leaves — never a sticky panel you have to click closed again.
   const [weeklyHover, setWeeklyHover] = useState(false);
   const [hookReady, setHookReady] = useState(false);
+  const [toast, setToast] = useState("");
   const [, tick] = useState(0);
 
   const nodata = status === "nodata" || !usage;
@@ -53,11 +55,13 @@ function App() {
   // desktop clicks: setup card, open menu, or cat (+ 5h gauge, + optional weekly chip).
   const weeklyShown = weeklyHover && !menuOpen;
   const bodyH = SIZES[size].catH + 46 + (weeklyShown ? 44 : 0);
-  const dims: [number, number] = nodata
+  let dims: [number, number] = nodata
     ? [216, 268]
     : menuOpen
     ? [220, 384]
     : [Math.max(SIZES[size].w, 150), bodyH];
+  // Make room for a transient toast so the tiny window doesn't clip it.
+  if (toast) dims = [Math.max(dims[0], 212), dims[1] + 46];
   const lastDims = useRef<string>("");
   useEffect(() => {
     const key = dims.join("x");
@@ -97,6 +101,23 @@ function App() {
   // "waiting for usage" rather than prompting to connect again.
   useEffect(() => {
     invoke<boolean>("hook_installed").then(setHookReady).catch(() => {});
+  }, []);
+
+  // Tray actions (install hook, start-on-login) report back via a "toast" event. Show it
+  // briefly, and refresh the hook-installed state since "Install statusline hook" may have
+  // just changed it.
+  useEffect(() => {
+    let timer: number;
+    const un = listen<string>("toast", (e) => {
+      setToast(e.payload);
+      invoke<boolean>("hook_installed").then(setHookReady).catch(() => {});
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => setToast(""), 4000);
+    });
+    return () => {
+      window.clearTimeout(timer);
+      un.then((f) => f());
+    };
   }, []);
 
   async function handleInstall() {
@@ -230,6 +251,8 @@ function App() {
           onClose={() => setMenuOpen(false)}
         />
       )}
+
+      {toast && <div className="toast">{toast}</div>}
     </div>
   );
 }
